@@ -20,6 +20,7 @@ import org.opensearch.commons.alerting.aggregation.bucketselectorext.BucketSelec
 import org.opensearch.script.Script;
 import org.opensearch.search.aggregations.AggregationBuilder;
 import org.opensearch.search.aggregations.bucket.terms.TermsAggregationBuilder;
+import org.opensearch.search.aggregations.metrics.CardinalityAggregationBuilder;
 import org.opensearch.securityanalytics.rules.aggregation.AggregationItem;
 import org.opensearch.securityanalytics.rules.condition.ConditionAND;
 import org.opensearch.securityanalytics.rules.condition.ConditionFieldEqualsValueExpression;
@@ -29,6 +30,8 @@ import org.opensearch.securityanalytics.rules.condition.ConditionOR;
 import org.opensearch.securityanalytics.rules.condition.ConditionValueExpression;
 import org.opensearch.securityanalytics.rules.condition.ConditionType;
 import org.opensearch.securityanalytics.rules.exceptions.SigmaValueError;
+import org.opensearch.securityanalytics.rules.objects.SigmaAlias;
+import org.opensearch.securityanalytics.rules.objects.SigmaCorrelation;
 import org.opensearch.securityanalytics.rules.types.SigmaBool;
 import org.opensearch.securityanalytics.rules.types.SigmaCIDRExpression;
 import org.opensearch.securityanalytics.rules.types.SigmaCompareExpression;
@@ -41,11 +44,7 @@ import org.opensearch.securityanalytics.rules.utils.Either;
 import org.apache.commons.lang3.NotImplementedException;
 
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
 
 public class OSQueryBackend extends QueryBackend {
     private String tokenSeparator;
@@ -104,6 +103,8 @@ public class OSQueryBackend extends QueryBackend {
 
     private String bucketTriggerScript;
 
+    private String correlationRulesQuery;
+
     private static final String groupExpression = "(%s)";
     private static final Map<String, String> compareOperators = Map.of(
             SigmaCompareExpression.CompareOperators.GT, "gt",
@@ -144,6 +145,8 @@ public class OSQueryBackend extends QueryBackend {
         this.aggCountQuery = "{\"%s\":{\"terms\":{\"field\":\"%s\"}}}";
         this.bucketTriggerQuery = "{\"buckets_path\":{\"%s\":\"%s\"},\"parent_bucket_path\":\"%s\",\"script\":{\"source\":\"params.%s %s %s\",\"lang\":\"painless\"}}";
         this.bucketTriggerScript = "params.%s %s %s";
+
+        this.correlationRulesQuery = "{\"terms\":{\"rule.id\":[%s]}}";
     }
 
     @Override
@@ -430,6 +433,116 @@ public class OSQueryBackend extends QueryBackend {
         }
         return conditionValStr;
     }
+
+    @Override
+    public Script convertCorrelationAlias(SigmaAlias aliases) {
+        StringBuilder scriptSource = new StringBuilder();
+        for (String ruleId: aliases.getAliases().keySet()) {
+            scriptSource.append(String.format("if (doc[\"rule.id\"].value == \"%s\" && doc[\"%s\"].value != null){\n", ruleId, aliases.getAliases().get(ruleId)));
+            scriptSource.append(String.format("emit(doc[\"%s\"].value);\n", aliases.getAliases().get(ruleId)));
+            scriptSource.append("}\n");
+        }
+        return new Script(scriptSource.toString());
+    }
+
+    @Override
+    public String convertCorrelationRules(List<String> rules) {
+        StringBuilder rulesArray = new StringBuilder();
+        boolean first = true;
+        for (String rule : rules) {
+            if (!first) {
+                rulesArray.append(",");
+            }
+            rulesArray.append(String.format("\"%s\"", rule));
+            first = false;
+        }
+        return String.format(this.correlationRulesQuery, rulesArray);
+    }
+
+    @Override
+    public BucketSelectorExtAggregationBuilder convertCorrelationCondition(SigmaCorrelation sigmaCorrelation){
+        String bucketTriggerSelectorId = UUIDs.base64UUID();
+        StringBuilder conditionBuilder = new StringBuilder();
+
+        boolean previous = false;
+        if (sigmaCorrelation.getCondition().getEq() != null) {
+            conditionBuilder.append(String.format("params.result == %d", sigmaCorrelation.getCondition().getEq()));
+            previous = true;
+        }
+        if (sigmaCorrelation.getCondition().getNeq() != null) {
+            if (previous) {
+                conditionBuilder.append(" && ");
+            }
+            conditionBuilder.append(String.format("params.result != %d", sigmaCorrelation.getCondition().getNeq()));
+            previous = true;
+        }
+        if (sigmaCorrelation.getCondition().getGt() != null) {
+            if (previous) {
+                conditionBuilder.append(" && ");
+            }
+            conditionBuilder.append(String.format("params.result > %d", sigmaCorrelation.getCondition().getGt()));
+            previous = true;
+        }
+        if (sigmaCorrelation.getCondition().getGte() != null) {
+            if (previous) {
+                conditionBuilder.append(" && ");
+            }
+            conditionBuilder.append(String.format("params.result >= %d", sigmaCorrelation.getCondition().getGte()));
+            previous = true;
+        }
+        if (sigmaCorrelation.getCondition().getLt() != null) {
+            if (previous) {
+                conditionBuilder.append(" && ");
+            }
+            conditionBuilder.append(String.format("params.result < %d", sigmaCorrelation.getCondition().getLt()));
+            previous = true;
+        }
+        if (sigmaCorrelation.getCondition().getLte() != null) {
+            if (previous) {
+                conditionBuilder.append(" && ");
+            }
+            conditionBuilder.append(String.format("params.result <= %d", sigmaCorrelation.getCondition().getLte()));
+        }
+
+        Script script = new Script(conditionBuilder.toString());
+
+        String type = switch (sigmaCorrelation.getType()) {
+            case SigmaCorrelation.VALUE_COUNT, SigmaCorrelation.VALUE_AVG, SigmaCorrelation.VALUE_SUM,
+                 SigmaCorrelation.VALUE_PERCENTILE -> {
+                yield sigmaCorrelation.getGroupBys().getLast().replace('.', '_');
+            }
+            default -> {
+                yield "_cnt";
+            }
+        };
+
+        return new BucketSelectorExtAggregationBuilder(bucketTriggerSelectorId, Collections.singletonMap("result", type), script, sigmaCorrelation.getGroupBys().getFirst().replace('.', '_'), null);
+    }
+
+    @Override
+    public  AggregationBuilder convertCorrelationAggregation(SigmaCorrelation sigmaCorrelation) {
+        AggregationBuilder aggregation = null;
+        switch (sigmaCorrelation.getType()) {
+            case SigmaCorrelation.VALUE_COUNT -> {
+                CardinalityAggregationBuilder cardinalityAggregationBuilder = new CardinalityAggregationBuilder("count");
+                cardinalityAggregationBuilder.field(sigmaCorrelation.getCondition().getFields().get(0));
+                aggregation = cardinalityAggregationBuilder;
+            }
+            default -> {
+                break;
+            }
+        }
+        for (String groupBy : sigmaCorrelation.getGroupBys().reversed()) {
+            TermsAggregationBuilder currentAggregation = new TermsAggregationBuilder(groupBy.replace('.', '_'));
+            currentAggregation.field(groupBy);
+            if (aggregation != null) {
+                currentAggregation.subAggregation(aggregation);
+            }
+            aggregation = currentAggregation;
+        }
+        return aggregation;
+    }
+
 
 // TODO: below methods will be supported when Sigma Expand Modifier is supported.
 //

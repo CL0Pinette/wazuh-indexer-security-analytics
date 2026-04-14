@@ -404,8 +404,17 @@ public class RuleIndices {
             SigmaRule rule = SigmaRule.fromYaml(ruleStr, true);
             // TODO: Check if there are cx errors from the rule created and throw errors
             backend.resetQueryFields();
-            List<Object> ruleQueries = backend.convertRule(rule);
-            Set<String> queryFieldNames = backend.getQueryFields().keySet();
+            List<Object> ruleQueries;
+            Set<String> queryFieldNames;
+            if (rule.isDetection()) {
+                ruleQueries = backend.convertRule(rule);
+                queryFieldNames = backend.getQueryFields().keySet();
+            } else {
+                ruleQueries = null; //backend.convertCorrelationRule(rule);
+                queryFieldNames = backend.getQueryFields().keySet();
+            }
+
+
             Rule ruleModel =
                     new Rule(
                             rule.getId().toString(),

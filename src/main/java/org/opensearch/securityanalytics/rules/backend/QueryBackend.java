@@ -4,6 +4,9 @@
  */
 package org.opensearch.securityanalytics.rules.backend;
 
+import org.opensearch.commons.alerting.aggregation.bucketselectorext.BucketSelectorExtAggregationBuilder;
+import org.opensearch.script.Script;
+import org.opensearch.search.aggregations.AggregationBuilder;
 import org.opensearch.securityanalytics.rules.aggregation.AggregationItem;
 import org.opensearch.securityanalytics.rules.backend.OSQueryBackend.AggregationQueries;
 import org.opensearch.securityanalytics.rules.condition.ConditionAND;
@@ -16,8 +19,7 @@ import org.opensearch.securityanalytics.rules.condition.ConditionValueExpression
 import org.opensearch.securityanalytics.rules.exceptions.SigmaConditionError;
 import org.opensearch.securityanalytics.rules.exceptions.SigmaError;
 import org.opensearch.securityanalytics.rules.exceptions.SigmaValueError;
-import org.opensearch.securityanalytics.rules.objects.SigmaCondition;
-import org.opensearch.securityanalytics.rules.objects.SigmaRule;
+import org.opensearch.securityanalytics.rules.objects.*;
 import org.opensearch.securityanalytics.rules.types.SigmaBool;
 import org.opensearch.securityanalytics.rules.types.SigmaCIDRExpression;
 import org.opensearch.securityanalytics.rules.types.SigmaCompareExpression;
@@ -273,4 +275,12 @@ public abstract class QueryBackend {
 /*   public abstract Object convertConditionValQueryExpr(ConditionValueExpression condition);*/
 
     public abstract AggregationQueries convertAggregation(AggregationItem aggregation);
+
+    public abstract Script convertCorrelationAlias(SigmaAlias aliases);
+
+    public abstract String convertCorrelationRules(List<String> rules);
+
+    public abstract BucketSelectorExtAggregationBuilder convertCorrelationCondition(SigmaCorrelation sigmaCorrelation);
+
+    public abstract AggregationBuilder convertCorrelationAggregation(SigmaCorrelation sigmaCorrelation);
 }

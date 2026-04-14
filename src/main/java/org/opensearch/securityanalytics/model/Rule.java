@@ -72,6 +72,7 @@ public class Rule implements Writeable, ToXContentObject {
     public static final String QUERY_FIELD_NAMES = "query_field_names";
 
     public static final String RULE = "rule";
+    public static final String IS_DETECTION = "is_detection";
 
     public static final String MITRE = "mitre";
     public static final String COMPLIANCE = "compliance";
@@ -122,6 +123,8 @@ public class Rule implements Writeable, ToXContentObject {
 
     private final String rule;
 
+    private final Boolean isDetection;
+
     private final List<Value> aggregationQueries;
 
     private final Map<String, Object> mitre;
@@ -151,6 +154,7 @@ public class Rule implements Writeable, ToXContentObject {
             List<Value> queries,
             List<Value> queryFieldNames,
             String rule,
+            Boolean isDetection,
             List<Value> aggregationQueries) {
         this(
                 id,
@@ -169,6 +173,7 @@ public class Rule implements Writeable, ToXContentObject {
                 queries,
                 queryFieldNames,
                 rule,
+                isDetection,
                 aggregationQueries,
                 Collections.emptyMap(),
                 Collections.emptyMap(),
@@ -192,6 +197,7 @@ public class Rule implements Writeable, ToXContentObject {
             List<Value> queries,
             List<Value> queryFieldNames,
             String rule,
+            Boolean isDetection,
             List<Value> aggregationQueries,
             Map<String, Object> mitre,
             Map<String, Object> complianceMap,
@@ -218,6 +224,7 @@ public class Rule implements Writeable, ToXContentObject {
         this.queries = queries;
         this.queryFieldNames = queryFieldNames;
         this.rule = rule;
+        this.isDetection = isDetection;
         this.aggregationQueries = aggregationQueries;
         this.mitre = mitre != null ? mitre : Collections.emptyMap();
         this.complianceMap = complianceMap != null ? complianceMap : Collections.emptyMap();
@@ -265,6 +272,7 @@ public class Rule implements Writeable, ToXContentObject {
                         .collect(Collectors.toList()),
                 queryFieldNames.stream().map(Value::new).collect(Collectors.toList()),
                 original,
+                rule.isDetection(),
                 // If one of the queries is AggregationQuery -> the whole rule can be considered as Agg
                 queries.stream()
                         .filter(query -> query instanceof AggregationQueries)
@@ -296,6 +304,7 @@ public class Rule implements Writeable, ToXContentObject {
                 sin.readList(Value::readFrom),
                 sin.readList(Value::readFrom),
                 sin.readString(),
+                sin.readBoolean(),
                 sin.readList(Value::readFrom),
                 (Map<String, Object>) sin.readGenericValue(), // mitre
                 (Map<String, Object>) sin.readGenericValue(), // compliance
@@ -329,6 +338,7 @@ public class Rule implements Writeable, ToXContentObject {
         out.writeCollection(this.queryFieldNames);
 
         out.writeString(this.rule);
+        out.writeBoolean(this.isDetection);
         out.writeCollection(this.aggregationQueries);
         out.writeGenericValue(this.mitre);
         out.writeGenericValue(this.complianceMap);
@@ -385,6 +395,7 @@ public class Rule implements Writeable, ToXContentObject {
         builder.field(AGGREGATION_QUERIES, aggregationsArray);
 
         builder.field(RULE, this.rule);
+        builder.field(IS_DETECTION, this.isDetection);
 
         if (this.mitre != null && !this.mitre.isEmpty()) {
             builder.field(MITRE, this.mitre);
@@ -449,6 +460,7 @@ public class Rule implements Writeable, ToXContentObject {
         List<Value> queries = new ArrayList<>();
         List<Value> queryFields = new ArrayList<>();
         String original = null;
+        Boolean isDetection = null;
         List<Value> aggregationQueries = new ArrayList<>();
         Map<String, Object> mitre = Collections.emptyMap();
         Map<String, Object> compliance = Collections.emptyMap();
@@ -525,6 +537,9 @@ public class Rule implements Writeable, ToXContentObject {
                 case RULE:
                     original = xcp.text();
                     break;
+                case IS_DETECTION:
+                    isDetection = xcp.booleanValue();
+                    break;
                 case AGGREGATION_QUERIES:
                     XContentParserUtils.ensureExpectedToken(
                             XContentParser.Token.START_ARRAY, xcp.currentToken(), xcp);
@@ -570,6 +585,7 @@ public class Rule implements Writeable, ToXContentObject {
                         queries,
                         queryFields,
                         Objects.requireNonNull(original, "Rule String is null"),
+                        isDetection,
                         aggregationQueries,
                         mitre,
                         compliance,
@@ -645,6 +661,10 @@ public class Rule implements Writeable, ToXContentObject {
 
     public String getRule() {
         return this.rule;
+    }
+
+    public Boolean isDetection() {
+        return isDetection;
     }
 
     public List<Value> getQueries() {

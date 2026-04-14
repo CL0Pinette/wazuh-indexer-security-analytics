@@ -106,6 +106,8 @@ import org.opensearch.securityanalytics.rules.backend.OSQueryBackend;
 import org.opensearch.securityanalytics.rules.backend.OSQueryBackend.AggregationQueries;
 import org.opensearch.securityanalytics.rules.backend.QueryBackend;
 import org.opensearch.securityanalytics.rules.exceptions.SigmaConditionError;
+import org.opensearch.securityanalytics.rules.objects.SigmaCorrelation;
+import org.opensearch.securityanalytics.rules.objects.SigmaRule;
 import org.opensearch.securityanalytics.settings.SecurityAnalyticsSettings;
 import org.opensearch.securityanalytics.util.DetectorIndices;
 import org.opensearch.securityanalytics.util.ExceptionChecker;
@@ -1273,35 +1275,61 @@ public class TransportIndexDetectorAction
     private void createBucketLevelMonitorRequest(
             Rule rule,
             Detector detector,
-            WriteRequest.RefreshPolicy refreshPolicy,
+            RefreshPolicy refreshPolicy,
             String monitorId,
-            RestRequest.Method restMethod,
+            Method restMethod,
             QueryBackend queryBackend,
             ActionListener<IndexMonitorRequest> listener)
             throws SigmaConditionError {
         log.debug(":create bucket level monitor response starting");
         List<String> indices = detector.getInputs().get(0).getIndices();
         try {
-            AggregationItem aggItem = rule.getAggregationItemsFromRule().get(0);
-            AggregationQueries aggregationQueries = queryBackend.convertAggregation(aggItem);
+            AggregationQueries aggregationQueries;
+            String timeframe;
+            SigmaRule sigmaRule = SigmaRule.fromYaml(rule.getRule(), false);
 
-            SearchSourceBuilder searchSourceBuilder =
-                    new SearchSourceBuilder()
-                            .seqNoAndPrimaryTerm(true)
-                            .version(true)
-                            // Build query string filter
-                            .query(QueryBuilders.queryStringQuery(rule.getQueries().get(0).getValue()))
-                            .aggregation(aggregationQueries.getAggBuilder());
-            // input index can also be an index pattern or alias so we have to resolve it to concrete
-            // index
-            String concreteIndex =
-                    IndexUtils.getNewIndexByCreationDate(
-                            clusterService.state(),
-                            indexNameExpressionResolver,
-                            indices.get(
-                                    0) // taking first one is fine because we expect that all indices in list share
-                            // same mappings
-                            );
+            SearchSourceBuilder searchSourceBuilder;
+            String concreteIndex;
+            if (rule.isDetection()) {
+                AggregationItem aggItem = rule.getAggregationItemsFromRule().get(0);
+                aggregationQueries = queryBackend.convertAggregation(aggItem);
+                timeframe = aggItem.getTimeframe();
+                searchSourceBuilder = new SearchSourceBuilder()
+                        .seqNoAndPrimaryTerm(true)
+                        .version(true)
+                        // Build query string filter
+                        .query(QueryBuilders.queryStringQuery(rule.getQueries().get(0).getValue()))
+                        .aggregation(aggregationQueries.getAggBuilder());
+                // input index can also be an index pattern or alias so we have to resolve it to concrete
+                // index
+                concreteIndex = IndexUtils.getNewIndexByCreationDate(
+                        clusterService.state(),
+                        indexNameExpressionResolver,
+                        indices.get(
+                                0) // taking first one is fine because we expect that all indices in list share
+                        // same mappings
+                );
+            } else {
+                aggregationQueries = null;
+                timeframe = sigmaRule.getCorrelation().getTimespan();
+                searchSourceBuilder = new SearchSourceBuilder()
+                        .seqNoAndPrimaryTerm(true)
+                        .version(true)
+                        .fetchSource(false)
+                        // Build query string filter
+                        .query(QueryBuilders.termsQuery("rule.id", sigmaRule.getCorrelation().getRules()))
+                        .aggregation(queryBackend.convertCorrelationAggregation(sigmaRule.getCorrelation()));
+
+                if (sigmaRule.getCorrelation().getAliases() != null && sigmaRule.getCorrelation().getAliases().getAliases() != null) {
+                    for (String alias : sigmaRule.getCorrelation().getAliases().getAliases().keySet()) {
+                        searchSourceBuilder.derivedField(alias, "keyword", queryBackend.convertCorrelationAlias(sigmaRule.getCorrelation().getAliases().getAliases().get(alias)));
+                    }
+                }
+                // input index can also be an index pattern or alias so we have to resolve it to concrete
+                // index
+                concreteIndex = DetectorMonitorConfig.getWazuhFindingsIndex(rule.getLogSource());
+            }
+
             client.execute(
                     GetIndexMappingsAction.INSTANCE,
                     new GetIndexMappingsRequest(concreteIndex),
@@ -1333,7 +1361,7 @@ public class TransportIndexDetectorAction
                                         QueryBuilders.rangeQuery(TIMESTAMP_FIELD_ALIAS)
                                                 .gt(
                                                         "{{period_end}}||-"
-                                                                + (aggItem.getTimeframe() != null ? aggItem.getTimeframe() : "1h"))
+                                                                + (timeframe != null ? timeframe : "1h"))
                                                 .lte("{{period_end}}")
                                                 .format("epoch_millis");
                                 boolQueryBuilder.must(timeRangeFilter);
@@ -1345,13 +1373,23 @@ public class TransportIndexDetectorAction
                             bucketLevelMonitorInputs.add(new SearchInput(indices, searchSourceBuilder));
 
                             List<BucketLevelTrigger> triggers = new ArrayList<>();
-                            BucketLevelTrigger bucketLevelTrigger =
-                                    new BucketLevelTrigger(
-                                            rule.getId(),
-                                            rule.getTitle(),
-                                            rule.getLevel(),
-                                            aggregationQueries.getCondition(),
-                                            Collections.emptyList());
+                            BucketLevelTrigger bucketLevelTrigger;
+                            if (rule.isDetection()) {
+                                assert aggregationQueries != null;
+                                bucketLevelTrigger = new BucketLevelTrigger(
+                                        rule.getId(),
+                                        rule.getTitle(),
+                                        rule.getLevel(),
+                                        aggregationQueries.getCondition(),
+                                        Collections.emptyList());
+                            } else {
+                                bucketLevelTrigger = new BucketLevelTrigger(
+                                        rule.getId(),
+                                        rule.getTitle(),
+                                        rule.getLevel(),
+                                        queryBackend.convertCorrelationCondition(sigmaRule.getCorrelation()),
+                                        Collections.emptyList());
+                            }
                             triggers.add(bucketLevelTrigger);
 
                             /**
