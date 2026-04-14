@@ -127,9 +127,25 @@ public class WCSFieldValidator {
      * @param detectionMap the raw detection map from the YAML
      * @return list of unknown field names (empty if all valid)
      */
-    public static List<String> findUnknownFields(Map<String, Object> detectionMap) {
+    public static List<String> findUnknownDetectionFields(Map<String, Object> detectionMap) {
         Set<String> referencedFields = new HashSet<>();
-        extractFields(detectionMap, referencedFields);
+        extractDetectionFields(detectionMap, referencedFields);
+
+        return referencedFields.stream()
+                .filter(f -> !isWCSField(f))
+                .sorted()
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Validate that all fields in the correlation stanza are WCS fields.
+     *
+     * @param correlationMap the raw correlation map from the YAML
+     * @return list of unknown field names (empty if all valid)
+     */
+    public static List<String> findUnknownCorrelationFields(Map<String, Object> correlationMap) {
+        Set<String> referencedFields = new HashSet<>();
+        extractCorrelationFields(correlationMap, referencedFields);
 
         return referencedFields.stream()
                 .filter(f -> !isWCSField(f))
@@ -160,7 +176,7 @@ public class WCSFieldValidator {
      * @param fields the set to add found fields to
      */
     @SuppressWarnings("unchecked")
-    private static void extractFields(Map<String, Object> map, Set<String> fields) {
+    private static void extractDetectionFields(Map<String, Object> map, Set<String> fields) {
         if (map == null) {
             return;
         }
@@ -186,7 +202,48 @@ public class WCSFieldValidator {
             } else if (val instanceof List) {
                 for (Object item : (List<Object>) val) {
                     if (item instanceof Map) {
-                        extractFields(Collections.singletonMap(key, item), fields);
+                        extractDetectionFields(Collections.singletonMap(key, item), fields);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Recursively extracts field names from a nested correlation map. Ignores specific keys like
+     * "timespan" and "rules".
+     *
+     * @param map the map to extract fields from
+     * @param fields the set to add found fields to
+     */
+    @SuppressWarnings("unchecked")
+    private static void extractCorrelationFields(Map<String, Object> map, Set<String> fields) {
+        if (map == null) {
+            return;
+        }
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            String key = entry.getKey();
+            if ("timespan".equals(key) || "rules".equals(key)) {
+                continue;
+            }
+
+            Object val = entry.getValue();
+            if (val instanceof Map) {
+                Map<String, Object> inner = (Map<String, Object>) val;
+                for (String innerKey : inner.keySet()) {
+                    if ("rules".equals(innerKey) || "timespan".equals(innerKey)) {
+                        continue;
+                    }
+                    String fieldName =
+                            innerKey.contains("|") ? innerKey.substring(0, innerKey.indexOf('|')) : innerKey;
+                    if (!fieldName.isEmpty()) {
+                        fields.add(fieldName);
+                    }
+                }
+            } else if (val instanceof List) {
+                for (Object item : (List<Object>) val) {
+                    if (item instanceof Map) {
+                        extractCorrelationFields(Collections.singletonMap(key, item), fields);
                     }
                 }
             }
@@ -230,9 +287,25 @@ public class WCSFieldValidator {
         if (detectionMap == null) {
             return;
         }
-        List<String> unknownFields = findUnknownFields(detectionMap);
+        List<String> unknownFields = findUnknownDetectionFields(detectionMap);
         if (!unknownFields.isEmpty()) {
             throw new SigmaError("Unknown WCS fields in detection: " + unknownFields);
+        }
+    }
+
+    /**
+     * Validate correlation fields and throw if unknown fields found.
+     *
+     * @param correlationMap the raw correlation map from the YAML
+     * @throws SigmaError if unknown WCS fields are found in the correlation map
+     */
+    public static void validateCorrelationFields(Map<String, Object> correlationMap) throws SigmaError {
+        if (correlationMap == null) {
+            return;
+        }
+        List<String> unknownFields = findUnknownCorrelationFields(correlationMap);
+        if (!unknownFields.isEmpty()) {
+            throw new SigmaError("Unknown WCS fields in correlation: " + unknownFields);
         }
     }
 

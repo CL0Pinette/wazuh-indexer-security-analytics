@@ -4,21 +4,14 @@
  */
 package org.opensearch.securityanalytics.rules.objects;
 
-import org.opensearch.securityanalytics.rules.exceptions.SigmaDateError;
-import org.opensearch.securityanalytics.rules.exceptions.SigmaDetectionError;
-import org.opensearch.securityanalytics.rules.exceptions.SigmaError;
-import org.opensearch.securityanalytics.rules.exceptions.SigmaIdentifierError;
-import org.opensearch.securityanalytics.rules.exceptions.CompositeSigmaErrors;
-import org.opensearch.securityanalytics.rules.exceptions.SigmaLevelError;
-import org.opensearch.securityanalytics.rules.exceptions.SigmaLogsourceError;
-import org.opensearch.securityanalytics.rules.exceptions.SigmaTitleError;
-import org.opensearch.securityanalytics.rules.exceptions.SigmaStatusError;
+import org.opensearch.securityanalytics.rules.exceptions.*;
 import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
 import org.yaml.snakeyaml.representer.Representer;
 
+import java.text.Normalizer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -29,11 +22,15 @@ import java.util.UUID;
 
 public class SigmaRule {
 
+    private String name;
+
     private String title;
 
     private SigmaLogSource logSource;
 
     private SigmaDetections detection;
+
+    private SigmaCorrelation correlation;
 
     private UUID id;
 
@@ -63,22 +60,24 @@ public class SigmaRule {
 
     private SigmaCompliance compliance;
 
-    public SigmaRule(String title, SigmaLogSource logSource, SigmaDetections detection, UUID id, SigmaStatus status,
+    public SigmaRule(String name, String title, SigmaLogSource logSource, SigmaDetections detection, SigmaCorrelation correlation, UUID id, SigmaStatus status,
                      String description, List<String> references, List<SigmaRuleTag> tags, String author, Date date,
                      List<String> fields, List<String> falsePositives, SigmaLevel level, CompositeSigmaErrors errors) {
-        this(title, logSource, detection, id, status, description, references, tags, author, date,
+        this(name, title, logSource, detection, correlation, id, status, description, references, tags, author, date,
                 fields, falsePositives, level, errors, null, null, null);
     }
 
-    public SigmaRule(String title, SigmaLogSource logSource, SigmaDetections detection, UUID id, SigmaStatus status,
+    public SigmaRule(String name, String title, SigmaLogSource logSource, SigmaDetections detection, SigmaCorrelation correlation, UUID id, SigmaStatus status,
                      String description, List<String> references, List<SigmaRuleTag> tags, String author, Date date,
                      List<String> fields, List<String> falsePositives, SigmaLevel level, CompositeSigmaErrors errors,
                      SigmaMetadata metadata, SigmaMitre mitre, SigmaCompliance compliance) {
+        this.name = name;
         this.title = title;
         this.logSource = logSource;
         this.detection = detection;
-        this.id = id;
+        this.correlation = correlation;
         this.status = status;
+        this.id = id;
         this.description = description;
         this.references = references;
         this.tags = tags;
@@ -149,6 +148,16 @@ public class SigmaRule {
             errors.addError(new SigmaTitleError("Sigma rule title can be max 256 characters"));
         }
 
+        String name;
+        if (rule.containsKey("name")) {
+            name = rule.get("name").toString();
+        } else {
+            name = Normalizer.normalize(title, Normalizer.Form.NFD).replaceAll("[^\\p{L}\\p{N}]", "_")
+                    .replaceAll("_+", "_")
+                    .replaceAll("^_|_$", "")
+                    .toLowerCase();
+        }
+
         SigmaLevel level = null;
         if (rule.containsKey("level")) {
             try {
@@ -201,14 +210,25 @@ public class SigmaRule {
         }
 
         SigmaDetections detections = null;
+        SigmaCorrelation correlation = null;
         if (rule.containsKey("detection")) {
             try {
                 detections = SigmaDetections.fromDict((Map<String, Object>) rule.get("detection"));
             } catch (SigmaError ex) {
                 errors.addError(new SigmaDetectionError("Sigma rule must have a detection definitions"));
             }
+        } else if (rule.containsKey("correlation")) {
+            try {
+                correlation = SigmaCorrelation.fromDict((Map<String, Object>) rule.get("correlation"));
+            } catch (SigmaError ex) {
+                errors.addError(new SigmaCorrelationError("Sigma correlation rule must have a correlation definitions"));
+            }
         } else {
-            errors.addError(new SigmaDetectionError("Sigma rule must have a detection definitions"));
+            errors.addError(new SigmaError("Sigma rule must have either a detection or a correlation definitions"));
+        }
+
+        if (rule.containsKey("detection") && rule.containsKey("correlation")) {
+            errors.addError(new SigmaError("Sigma rule must have either a detection or a correlation definitions but not both"));
         }
 
         List<String> ruleTagsStr = (List<String>) rule.get("tags");
@@ -248,6 +268,12 @@ public class SigmaRule {
             } catch (SigmaError ex) {
                 errors.addError(ex);
             }
+        } else if (rule.containsKey("correlation")) {
+            try {
+                WCSFieldValidator.validateCorrelationFields((Map<String, Object>) rule.get("correlation"));
+            } catch (SigmaError ex) {
+                errors.addError(ex);
+            }
         }
 
         if (!collectErrors && !errors.getErrors().isEmpty()) {
@@ -259,7 +285,7 @@ public class SigmaRule {
         String author = (metadata != null && metadata.getAuthor() != null) ? metadata.getAuthor() : (rule.get("author") != null ? rule.get("author").toString() : null);
         List<String> references = (metadata != null && metadata.getReferences() != null && !metadata.getReferences().isEmpty()) ? metadata.getReferences() : (rule.get("references") != null ? (List<String>) rule.get("references") : null);
 
-        return new SigmaRule(title, logSource, detections, ruleId, status,
+        return new SigmaRule(name, title, logSource, detections, correlation, ruleId, status,
                 description, references, ruleTags, author, ruleDate,
                 rule.get("fields") != null? (List<String>) rule.get("fields"): null,
                 rule.get("falsepositives") != null? (List<String>) rule.get("falsepositives"): null, level, errors,
@@ -275,8 +301,16 @@ public class SigmaRule {
         return fromDict(ruleMap, collectErrors);
     }
 
+    public boolean isDetection() {
+        return detection != null && correlation == null;
+    }
+
     public String getTitle() {
         return title;
+    }
+
+    public String getName() {
+        return name;
     }
 
     public SigmaLogSource getLogSource() {
@@ -285,6 +319,10 @@ public class SigmaRule {
 
     public SigmaDetections getDetection() {
         return detection;
+    }
+
+    public SigmaCorrelation getCorrelation() {
+        return correlation;
     }
 
     public UUID getId() {
